@@ -10,6 +10,10 @@ from typing import List, Optional, Literal
 import httpx
 import xml.etree.ElementTree as ET
 import math
+import asyncpg
+
+# Database config
+DB_DSN = "postgresql:///comoot"
 
 app = FastAPI(
     title="Comoot API",
@@ -264,6 +268,72 @@ def extract_climbs_from_gpx(gpx_xml: str) -> List[Climb]:
         return []
 
 
+async def get_surface_breakdown_from_route(gpx_xml: str) -> dict:
+    """Extract surface breakdown from PostGIS by finding ways near the route."""
+    try:
+        root = ET.fromstring(gpx_xml)
+        ns = {"gpx": "http://www.topografix.com/GPX/1/1"}
+        coords = []
+        for pt in root.findall(".//gpx:trkpt", ns):
+            coords.append((float(pt.get("lon")), float(pt.get("lat"))))
+
+        if len(coords) < 2:
+            return {"asphalt": 50, "gravel": 50, "trail": 0}
+
+        # Build linestring for the route
+        route_wkt = "LINESTRING(" + ", ".join(f"{lon} {lat}" for lon, lat in coords) + ")"
+
+        conn = await asyncpg.connect(DB_DSN)
+        try:
+            # Use bounding box pre-filter + ST_DWithin for performance
+            # Get bbox from coordinates
+            lons = [c[0] for c in coords]
+            lats = [c[1] for c in coords]
+            bbox = f"{min(lons) - 0.005} {min(lats) - 0.005}, {max(lons) + 0.005} {max(lats) + 0.005}"
+
+            rows = await conn.fetch("""
+                SELECT surface_class, SUM(ST_Length(geom::geography)) as total_length
+                FROM osm_ways
+                WHERE geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)
+                AND ST_DWithin(
+                    geom::geography,
+                    ST_GeomFromText($1, 4326)::geography,
+                    25
+                )
+                AND surface_class IS NOT NULL
+                GROUP BY surface_class
+                ORDER BY total_length DESC
+                LIMIT 10
+            """, route_wkt, min(lons), min(lats), max(lons), max(lats))
+        finally:
+            await conn.close()
+
+        if not rows:
+            return {"asphalt": 50, "gravel": 50, "trail": 0}
+
+        # Map surface_class to display categories
+        total = sum(r["total_length"] for r in rows) or 1
+        breakdown = {"asphalt": 0, "gravel": 0, "trail": 0}
+        for row in rows:
+            sc = row["surface_class"]
+            pct = round(row["total_length"] / total * 100)
+            if sc in ("road_good", "road_ok", "road_poor"):
+                breakdown["asphalt"] += pct
+            elif sc in ("gravel_ideal", "gravel_ok", "gravel_poor"):
+                breakdown["gravel"] += pct
+            else:
+                breakdown["trail"] += pct
+
+        # Normalize to 100%
+        s = sum(breakdown.values()) or 1
+        for k in breakdown:
+            breakdown[k] = round(breakdown[k] / s * 100)
+
+        return breakdown
+    except Exception:
+        return {"asphalt": 50, "gravel": 50, "trail": 0}
+
+
 # ---------- Endpoints ----------
 
 @app.get("/health", tags=["meta"])
@@ -327,8 +397,8 @@ async def plan_route(req: PlanRequest):
     except Exception:
         geometry = {"type": "LineString", "coordinates": []}
 
-    # Build response
-    surface_breakdown = estimate_surface_breakdown(req.profile, distance_km)
+    # Get real surface breakdown from PostGIS
+    surface_breakdown = await get_surface_breakdown_from_route(gpx_xml)
     segments = build_segments_from_profile(req.profile, distance_km, elev_gain)
     climbs = extract_climbs_from_gpx(gpx_xml)
 
