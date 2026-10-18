@@ -1,4 +1,7 @@
+# Docker Compose v2 ist der Default. Mit Podman stattdessen:
+#   make COMPOSE="podman-compose" DOCKER=podman dev
 COMPOSE ?= docker compose
+DOCKER  ?= docker
 
 .PHONY: dev down db-reset import-osm
 
@@ -17,7 +20,7 @@ db-reset:
 import-osm:
 	@test -n "$(FILE)" || (echo "Usage: make import-osm FILE=/absoluter/pfad/datei.osm.pbf"; exit 1)
 	$(COMPOSE) up -d db
-	docker run --rm --network comoot \
+	$(DOCKER) run --rm --network comoot \
 		-v "$(CURDIR)/osm2pgsql_flex.lua":/config.lua:ro \
 		-v "$(FILE)":/data.osm.pbf:ro \
 		iboates/osm2pgsql:2.1.1 \
