@@ -3,6 +3,7 @@
 FastAPI + BRouter (RouteServer) for real routing.
 """
 
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -13,7 +14,7 @@ import math
 import asyncpg
 
 # Database config
-DB_DSN = "postgresql:///comoot"
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql:///comoot")
 
 app = FastAPI(
     title="Comoot API",
@@ -21,15 +22,17 @@ app = FastAPI(
     version="0.1.0",
 )
 
+CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in CORS_ORIGINS.split(",") if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # BRouter config
-BROUTER_URL = "http://localhost:17777"
+BROUTER_URL = os.environ.get("BROUTER_URL", "http://localhost:17777")
 PROFILE_MAP = {
     "road": "fastbike",
     "gravel": "gravel",
@@ -283,7 +286,7 @@ async def get_surface_breakdown_from_route(gpx_xml: str) -> dict:
         # Build linestring for the route
         route_wkt = "LINESTRING(" + ", ".join(f"{lon} {lat}" for lon, lat in coords) + ")"
 
-        conn = await asyncpg.connect(DB_DSN)
+        conn = await asyncpg.connect(DATABASE_URL)
         try:
             # Use bounding box pre-filter + ST_DWithin for performance
             # Get bbox from coordinates

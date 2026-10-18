@@ -1,0 +1,62 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://comoot:comoot@db:5432/comoot
+      BROUTER_URL: http://brouter:17777
+      CORS_ORIGINS: "*"
+    depends_on:
+      - db
+      - brouter
+
+  brouter:
+    # :master statt :v1.7.8 — der letzte Release (1.7.8) hat lookups.dat v10,
+    # die aktuellen Segmente von brouter.de sind v11 (=> "lookup version mismatch").
+    # :master ist multi-arch (amd64 + arm64) und enthaelt die passenden Default-Profile.
+    image: ghcr.io/abrensch/brouter:master
+    ports:
+      - "17777:17777"
+    volumes:
+      - brouter-segments:/segments4
+      # Eigene Profile (BE-03) spaeter unter /customprofiles einhaengen —
+      # NICHT /profiles2 ueberschreiben, sonst fehlen die Default-Profile.
+    # Segmente beim ersten Start laden (München E10_N45, Leipzig E10_N50).
+    # Bewusst im selben Container statt als Init-Service: podman-compose kann
+    # `condition: service_completed_successfully` nicht sauber aufloesen.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for tile in E10_N45 E10_N50; do
+          if [ ! -f "/segments4/$${tile}.rd5" ]; then
+            echo "Lade $${tile}.rd5 ..."
+            curl -fsSL -o "/segments4/$${tile}.rd5.part" "https://brouter.de/brouter/segments4/$${tile}.rd5"
+            mv "/segments4/$${tile}.rd5.part" "/segments4/$${tile}.rd5"
+          fi
+        done
+        exec /app/server.sh
+
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: comoot
+      POSTGRES_PASSWORD: comoot
+      POSTGRES_DB: comoot
+    ports:
+      # Host-Port bewusst 5433, damit eine lokal laufende Postgres-Instanz
+      # auf 5432 nicht kollidiert. Ueberschreibbar via DB_HOST_PORT.
+      - "${DB_HOST_PORT:-5433}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # Aktiviert PostGIS in der comoot-DB (osm2pgsql + schema.sql brauchen es).
+      - ./db-init/00-extensions.sql:/docker-entrypoint-initdb.d/00-extensions.sql:ro
+
+networks:
+  default:
+    name: comoot
+
+volumes:
+  db-data:
+  brouter-segments:

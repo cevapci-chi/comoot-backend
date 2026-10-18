@@ -1,21 +1,26 @@
 -- Comoot database schema for OSM data + surface classification + scenic scoring
--- Run after osm2pgsql import
+-- Run after osm2pgsql import (`make import-osm`). Idempotent: mehrfach ausfuehrbar.
 
 -- 1. Surface classification enum
-CREATE TYPE surface_class AS ENUM (
-    'blocked',        -- motorway, trunk
-    'road_good',      -- asphalt, excellent/good smoothness
-    'road_ok',        -- asphalt intermediate, residential
-    'road_poor',      -- asphalt bad smoothness
-    'gravel_ideal',   -- fine_gravel, compacted, tracktype grade1-2
-    'gravel_ok',      -- gravel, dirt, tracktype grade3
-    'gravel_poor',    -- tracktype grade4-5
-    'avoid',          -- sand, mud, cobblestone, sett
-    'unknown'         -- paths without surface tag
-);
+DO $$
+BEGIN
+    CREATE TYPE surface_class AS ENUM (
+        'blocked',        -- motorway, trunk
+        'road_good',      -- asphalt, excellent/good smoothness
+        'road_ok',        -- asphalt intermediate, residential
+        'road_poor',      -- asphalt bad smoothness
+        'gravel_ideal',   -- fine_gravel, compacted, tracktype grade1-2
+        'gravel_ok',      -- gravel, dirt, tracktype grade3
+        'gravel_poor',    -- tracktype grade4-5
+        'avoid',          -- sand, mud, cobblestone, sett
+        'unknown'         -- paths without surface tag
+    );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;  -- Enum existiert bereits
+END $$;
 
 -- 2. Extend osm_ways with surface_class
-ALTER TABLE osm_ways ADD COLUMN surface_class surface_class;
+ALTER TABLE osm_ways ADD COLUMN IF NOT EXISTS surface_class surface_class;
 
 -- 3. Update surface_class based on tags
 UPDATE osm_ways SET surface_class = CASE
@@ -36,15 +41,15 @@ UPDATE osm_ways SET surface_class = CASE
     WHEN highway IN ('residential', 'service', 'living_street') THEN 'road_ok'
     WHEN highway IN ('path', 'track') THEN 'unknown'
     ELSE 'unknown'
-END;
+END::surface_class;
 
 -- 4. Index for routing queries
-CREATE INDEX idx_osm_ways_surface_class ON osm_ways (surface_class);
-CREATE INDEX idx_osm_ways_highway ON osm_ways (highway);
-CREATE INDEX idx_osm_ways_geom ON osm_ways USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_osm_ways_surface_class ON osm_ways (surface_class);
+CREATE INDEX IF NOT EXISTS idx_osm_ways_highway ON osm_ways (highway);
+CREATE INDEX IF NOT EXISTS idx_osm_ways_geom ON osm_ways USING GIST (geom);
 
 -- 5. Scenic scoring table
-CREATE TABLE scenic_features (
+CREATE TABLE IF NOT EXISTS scenic_features (
     id BIGSERIAL PRIMARY KEY,
     geom GEOMETRY(POINT, 4326),
     feature_type TEXT,  -- 'water', 'wood', 'viewpoint', 'historic', 'park'
@@ -52,41 +57,42 @@ CREATE TABLE scenic_features (
     importance FLOAT DEFAULT 1.0
 );
 
-CREATE INDEX idx_scenic_features_geom ON scenic_features USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_scenic_features_geom ON scenic_features USING GIST (geom);
 
--- 6. Populate scenic features from OSM nodes/ways
--- Water bodies
-INSERT INTO scenic_features (geom, feature_type, name, importance)
-SELECT ST_Centroid(way.geom), 'water', way.tags->'name', 1.0
-FROM planet_osm_polygon way
-WHERE way.tags ? 'natural' AND way.tags->'natural' IN ('water', 'lake', 'river', 'stream');
-
--- Forests/woods
-INSERT INTO scenic_features (geom, feature_type, name, importance)
-SELECT ST_Centroid(way.geom), 'wood', way.tags->'name', 0.8
-FROM planet_osm_polygon way
-WHERE way.tags ? 'landuse' AND way.tags->'landuse' = 'forest';
-
--- Viewpoints
-INSERT INTO scenic_features (geom, feature_type, name, importance)
-SELECT node.geom, 'viewpoint', node.tags->'name', 1.2
-FROM planet_osm_point node
-WHERE node.tags ? 'tourism' AND node.tags->'tourism' = 'viewpoint';
-
--- Historic/attractions
-INSERT INTO scenic_features (geom, feature_type, name, importance)
-SELECT node.geom, 'historic', node.tags->'name', 1.0
-FROM planet_osm_point node
-WHERE node.tags ? 'historic' AND node.tags->'historic' IN ('castle', 'ruins', 'monument', 'memorial');
-
--- Parks
-INSERT INTO scenic_features (geom, feature_type, name, importance)
-SELECT ST_Centroid(way.geom), 'park', way.tags->'name', 0.9
-FROM planet_osm_polygon way
-WHERE way.tags ? 'leisure' AND way.tags->'leisure' IN ('park', 'nature_reserve');
+-- 6. Scenic features aus OSM — derzeit deaktiviert.
+-- Grund: osm2pgsql_flex.lua legt nur die Linientabelle `osm_ways` an; es gibt
+-- weder `planet_osm_polygon`/`planet_osm_point` noch eine `tags`-HStore-Spalte.
+-- Die folgenden Inserts liefen gegen das alte pgsql-Output und wuerden mit
+-- ON_ERROR_STOP=1 den Import abbrechen. TODO: Polygon-/Punkt-Tabellen im
+-- Flex-Config ergaenzen (Folge-Ticket), dann aktivieren.
+--
+-- INSERT INTO scenic_features (geom, feature_type, name, importance)
+-- SELECT ST_Centroid(way.geom), 'water', way.tags->'name', 1.0
+-- FROM planet_osm_polygon way
+-- WHERE way.tags ? 'natural' AND way.tags->'natural' IN ('water', 'lake', 'river', 'stream');
+--
+-- INSERT INTO scenic_features (geom, feature_type, name, importance)
+-- SELECT ST_Centroid(way.geom), 'wood', way.tags->'name', 0.8
+-- FROM planet_osm_polygon way
+-- WHERE way.tags ? 'landuse' AND way.tags->'landuse' = 'forest';
+--
+-- INSERT INTO scenic_features (geom, feature_type, name, importance)
+-- SELECT node.geom, 'viewpoint', node.tags->'name', 1.2
+-- FROM planet_osm_point node
+-- WHERE node.tags ? 'tourism' AND node.tags->'tourism' = 'viewpoint';
+--
+-- INSERT INTO scenic_features (geom, feature_type, name, importance)
+-- SELECT node.geom, 'historic', node.tags->'name', 1.0
+-- FROM planet_osm_point node
+-- WHERE node.tags ? 'historic' AND node.tags->'historic' IN ('castle', 'ruins', 'monument', 'memorial');
+--
+-- INSERT INTO scenic_features (geom, feature_type, name, importance)
+-- SELECT ST_Centroid(way.geom), 'park', way.tags->'name', 0.9
+-- FROM planet_osm_polygon way
+-- WHERE way.tags ? 'leisure' AND way.tags->'leisure' IN ('park', 'nature_reserve');
 
 -- 7. Segment scoring view for routing
-CREATE VIEW segment_scores AS
+CREATE OR REPLACE VIEW segment_scores AS
 SELECT
     w.id,
     w.geom,
