@@ -1,0 +1,10 @@
+# Build-Kontext klein halten (nur requirements.txt + app/ werden kopiert)
+venv/
+.git/
+__pycache__/
+*.py[cod]
+.env
+.env.local
+*.osm.pbf
+*.rd5
+.DS_Store

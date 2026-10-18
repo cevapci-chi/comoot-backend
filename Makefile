@@ -27,4 +27,4 @@ import-osm:
 		--create --output=flex --style=/config.lua \
 		--database=postgresql://comoot:comoot@db:5432/comoot \
 		/data.osm.pbf
-	$(COMPOSE) exec -T db psql -U comoot -d comoot < schema.sql
+	$(COMPOSE) exec -T db psql -v ON_ERROR_STOP=1 -U comoot -d comoot < schema.sql
