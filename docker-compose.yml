@@ -1,0 +1,52 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://comoot:comoot@db:5432/comoot
+      BROUTER_URL: http://brouter:17777
+      CORS_ORIGINS: "*"
+    depends_on:
+      - db
+      - brouter
+
+  brouter:
+    image: ghcr.io/abrensch/brouter:v1.7.8
+    ports:
+      - "17777:17777"
+    volumes:
+      - brouter-segments:/segments4
+      - brouter-profiles:/profiles2
+    depends_on:
+      brouter-init:
+        condition: service_completed_successfully
+
+  brouter-init:
+    image: alpine:3.20
+    command: >
+      sh -c 'set -e;
+      [ -f /segments4/E10_N45.rd5 ] || wget -q https://brouter.de/brouter/segments4/E10_N45.rd5 -O /segments4/E10_N45.rd5;
+      [ -f /segments4/E10_N50.rd5 ] || wget -q https://brouter.de/brouter/segments4/E10_N50.rd5 -O /segments4/E10_N50.rd5'
+    volumes:
+      - brouter-segments:/segments4
+
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: comoot
+      POSTGRES_PASSWORD: comoot
+      POSTGRES_DB: comoot
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+networks:
+  default:
+    name: comoot
+
+volumes:
+  db-data:
+  brouter-segments:
+  brouter-profiles:
